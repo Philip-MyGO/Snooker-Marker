@@ -54,7 +54,8 @@ struct ContentView: View {
 enum HistoryType {
     case shot(points: Int)
     case clear(p1Prev: Int, p2Prev: Int)
-    case foul(points: Int, recveiver: Int)
+    case foul(points: Int, receiver: Int)
+    case freeBall(color: String)
 }
 
 struct HistoryEntry {
@@ -70,9 +71,25 @@ struct GameView: View {
     @State private var activePlayer: Int = 1
     @State private var scoreHistory: [HistoryEntry] = []
     @State private var showOverflowAlert: Bool = false
-    @State private var showFoulMenu = false
     let balls = ["RedBall", "YellowBall", "GreenBall", "BrownBall", "BlueBall", "PinkBall", "BlackBall"]
+    
+    @State private var showFoulMenu = false
     let foulPoints = [4, 5, 6, 7]
+    
+    @State private var showFreeBallMenu = false
+    let freeBallColors = ["YellowBall", "GreenBall", "BrownBall", "BlueBall", "PinkBall", "BlackBall"]
+
+    @State private var remaining: Int = 147
+    @State private var remainingRedBalls: Int = 15
+    @State private var isLastColor: Bool = false    // last red + colour set
+    private var player1Behind: Int {
+        max(0, player2Score - player1Score)
+    }
+    
+    private var player2Behind: Int {
+        max(0, player1Score - player2Score)
+    }
+    
     var body: some View {
         VStack {
             Text("Game View")
@@ -101,6 +118,15 @@ struct GameView: View {
                             .background(activePlayer == 1 ? Color.blue : Color.gray.opacity(0.3))
                             .cornerRadius(20)
                     }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Behind: \(player1Behind)")
+                            .foregroundColor(player1Behind > remaining ? .red : .secondary)
+                        Text("Remaining: \(remaining)")
+                            .foregroundColor(.secondary)
+                    }
+                    .font(.caption.bold())
+                    .padding(.top, 4)
                 }
                 .padding()
                 .background(activePlayer == 1 ? Color.blue.opacity(0.1) : Color.clear)
@@ -109,7 +135,6 @@ struct GameView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(activePlayer == 1 ? Color.blue : Color.gray.opacity(0.2), lineWidth: 2)
                 )
-                
                 Divider().frame(height: 100)
                 
                 // Player 2 Box
@@ -131,6 +156,15 @@ struct GameView: View {
                             .background(activePlayer == 2 ? Color.blue : Color.gray.opacity(0.3))
                             .cornerRadius(20)
                     }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Behind: \(player2Behind)")
+                            .foregroundColor(player2Behind > remaining ? .red : .secondary)
+                        Text("Remaining: \(remaining)")
+                            .foregroundColor(.secondary)
+                    }
+                    .font(.caption.bold())
+                    .padding(.top, 4)
                 }
                 .padding()
                 .background(activePlayer == 2 ? Color.blue.opacity(0.1) : Color.clear)
@@ -141,6 +175,13 @@ struct GameView: View {
                 )
             }
             .padding(.horizontal)
+            
+            // Show remaining red balls
+            Text("Red Balls Left: \(remainingRedBalls)")
+                .font(.footnote.bold())
+                .foregroundColor(.red)
+                .padding(.top, 8)
+            
             Spacer()
             
             // Balls
@@ -162,25 +203,49 @@ struct GameView: View {
             .navigationTitle("Match Setup")
             .navigationBarTitleDisplayMode(.inline)
             
-            // Foul
-            Button(action: {
-                showFoulMenu = true
-            }) {
-                Label("Foul", systemImage: "exclamationmark.triangle")
-                    .font(.subheadline.bold())
-                    .foregroundColor(.red)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 16)
-                    .background(Color.red.opacity(0.1))
-                    .cornerRadius(8)
-            }
-            .confirmationDialog("Select Foul Points", isPresented: $showFoulMenu, titleVisibility: .visible) {
-                ForEach(foulPoints, id: \.self) { points in
-                    Button("+\(points)") {
-                        foulScores(points: points)
-                    }
+            HStack(alignment: .center, spacing: 30) {
+                // Foul
+                Button(action: {
+                    showFoulMenu = true
+                }) {
+                    Label("Foul", systemImage: "exclamationmark.triangle")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.red)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(8)
                 }
-                Button("Cancel", role: .cancel) {}
+                .confirmationDialog("Select Foul Points", isPresented: $showFoulMenu, titleVisibility: .visible) {
+                    ForEach(foulPoints, id: \.self) { points in
+                        Button("+\(points)") {
+                            foulScores(points: points)
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
+                
+                // Free Ball
+                Button(action: {
+                    showFreeBallMenu = true
+                }) {
+                    Label("Free Ball", systemImage: "star.circle")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.red)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(8)
+                }
+                .confirmationDialog("Choose the Colour Ball", isPresented: $showFreeBallMenu, titleVisibility: .visible) {
+                    ForEach(freeBallColors, id: \.self) { ball in
+                        let displayName = ball.replacingOccurrences(of: "Ball", with: "")   // increase readability
+                        Button(displayName) {
+                            freeBallColors(color: ball)
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
             }
             Spacer()
             
@@ -229,17 +294,37 @@ struct GameView: View {
             case "BlackBall": points = 7
             default: points = 0
         }
+        
         guard points > 0 else { return }
-        let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points))
-        scoreHistory.append(entry)
+        if (name == "RedBall" && remainingRedBalls <= 0) { return }
+        
+        if (name == "RedBall") {
+            if (remainingRedBalls >= 0) {
+                remainingRedBalls -= 1
+                remaining -= 8
+                if (remainingRedBalls == 0) { isLastColor = true }
+            }
+        }
+        else {
+            if (isLastColor) {
+                isLastColor = false
+            }
+            else if (remainingRedBalls == 0) {
+                remaining = max(0, remaining - points)
+            }
+        }
         
         if (activePlayer == 1) {
             if (checkOverFlow(points: player1Score + points)) {
+                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points))
+                scoreHistory.append(entry)
                 player1Score += points
             }
         }
         else {
             if (checkOverFlow(points: player2Score + points)) {
+                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points))
+                scoreHistory.append(entry)
                 player2Score += points
             }
         }
@@ -258,8 +343,9 @@ struct GameView: View {
         let currOpponentScore = (receiver == 2) ? player2Score : player1Score
         if (!checkOverFlow(points: currOpponentScore + points)) { return }
         
-        let entry = HistoryEntry(playerNumber: activePlayer, type: .foul(points: points, recveiver: receiver))
+        let entry = HistoryEntry(playerNumber: activePlayer, type: .foul(points: points, receiver: receiver))
         scoreHistory.append(entry)
+        
         if (receiver == 1) {
             player1Score += points
         }
@@ -268,35 +354,88 @@ struct GameView: View {
         }
     }
     
+    private func freeBallColors(color: String) {
+        let points = 1
+        let currScore = (activePlayer == 1) ? player1Score : player2Score
+        if (!checkOverFlow(points: currScore + points)) { return }
+        
+        let entry = HistoryEntry(playerNumber: activePlayer, type: .freeBall(color: color))
+        scoreHistory.append(entry)
+        
+        if (activePlayer == 1) {
+            player1Score += points
+        }
+        else {
+            player2Score += points
+        }
+        
+        print("Free Ball: \(color) was taken as a red ball. +1 point to Player \(activePlayer)")
+    }
+    
     private func clearScores() {
-        if (player1Score == 0 && player2Score == 0) { return }
+        if (player1Score == 0 && player2Score == 0 && remainingRedBalls == 15) { return }
         let entry = HistoryEntry(playerNumber: 0, type: .clear(p1Prev: player1Score, p2Prev: player2Score))
         scoreHistory.append(entry)
         player1Score = 0
         player2Score = 0
+        remainingRedBalls = 15
+        remaining = 147
+        isLastColor = false
     }
     
     private func undoLastStep() {
         guard let lastEntry = scoreHistory.popLast() else { return }
+        
         switch lastEntry.type {
         case .shot(let points):
             if lastEntry.playerNumber == 1 {
                 player1Score = max(0, player1Score - points)
+                if (points == 1) {
+                    remainingRedBalls = min(15, remainingRedBalls + 1)
+                    remaining += 8
+                    if (remainingRedBalls == 1) { isLastColor = false }
+                }
+                else {
+                    if (remainingRedBalls == 0) {
+                        if (remaining == 27) { isLastColor = true }
+                        else { remaining += points }
+                    }
+                }
             }
             else {
                 player2Score = max(0, player2Score - points)
+                if (points == 1) {
+                    remainingRedBalls = min(15, remainingRedBalls + 1)
+                    remaining += 8
+                    if (remainingRedBalls == 1) { isLastColor = false }
+                }
+                else {
+                    if (remainingRedBalls == 0) {
+                        if (remaining == 27) { isLastColor = true }
+                        else { remaining += points }
+                    }
+                }
             }
             
         case .clear(let p1Prev, let p2Prev):
             player1Score = p1Prev
             player2Score = p2Prev
+            remainingRedBalls += 1
             
         case .foul(let points, let receiver):
-            if receiver == 1 {
+            if (receiver == 1) {
                 player1Score = max(0, player1Score - points)
             }
             else {
                 player2Score = max(0, player2Score - points)
+            }
+        
+        case .freeBall:
+            if (lastEntry.playerNumber == 1) {
+                player1Score = max(0, player1Score - 1)
+            }
+            else {
+                player2Score = max(0, player2Score - 1)
             }
         }
     }
