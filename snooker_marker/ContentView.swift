@@ -51,11 +51,18 @@ struct ContentView: View {
     }
 }
 
+enum NextRequiredBall: Equatable {
+    case red
+    case anyColor
+    case strictColor(Int)
+}
+
 enum HistoryType {
-    case shot(points: Int)
-    case clear(p1Prev: Int, p2Prev: Int)
+    case shot(points: Int, prevState: NextRequiredBall, prevSafe: Bool)
+    case clear(p1Prev: Int, p2Prev: Int, redBallsPrev: Int, remainingPrev: Int, nextReqPrev: NextRequiredBall, prevSafe: Bool)
     case foul(points: Int, receiver: Int)
-    case freeBall(color: String)
+    case freeBall(color: String, prevState: NextRequiredBall, prevSafe: Bool)
+    case miss(prevState: NextRequiredBall, prevSafe: Bool, prevPlayer: Int)
 }
 
 struct HistoryEntry {
@@ -71,6 +78,8 @@ struct GameView: View {
     @State private var activePlayer: Int = 1
     @State private var scoreHistory: [HistoryEntry] = []
     @State private var showOverflowAlert: Bool = false
+    @State private var nextRequired: NextRequiredBall = .red
+    @State private var isLastColorAfterRedSafe: Bool = false
     let balls = ["RedBall", "YellowBall", "GreenBall", "BrownBall", "BlueBall", "PinkBall", "BlackBall"]
     
     @State private var showFoulMenu = false
@@ -81,7 +90,7 @@ struct GameView: View {
 
     @State private var remaining: Int = 147
     @State private var remainingRedBalls: Int = 15
-    @State private var isLastColor: Bool = false    // last red + colour set
+
     private var player1Behind: Int {
         max(0, player2Score - player1Score)
     }
@@ -197,6 +206,17 @@ struct GameView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                // Miss
+                Button {
+                    missTapped()
+                } label: {
+                    Text("Miss")
+                        .font(.caption.bold())
+                        .foregroundColor(.white)
+                        .frame(width: 44, height: 32)
+                        .background(Color.gray)
+                        .cornerRadius(6)
+                }
             }
             .padding(.horizontal, 16)
             Spacer()
@@ -282,7 +302,6 @@ struct GameView: View {
     }
     
     private func ballTapped(name: String) {
-        print("\(name) was pressed")
         let points: Int
         switch name {
             case "RedBall": points = 1
@@ -294,36 +313,60 @@ struct GameView: View {
             case "BlackBall": points = 7
             default: points = 0
         }
-        
         guard points > 0 else { return }
-        if (name == "RedBall" && remainingRedBalls <= 0) { return }
+        
+        switch nextRequired {
+        case .red:
+            if (name != "RedBall") { return }
+        case .anyColor:
+            if (name == "RedBall") { return }
+        case .strictColor(let requiredPoints):
+            if (points != requiredPoints) { return }
+        }
+        
+        let stateSnapshot = nextRequired
+        let safeSnapshot = isLastColorAfterRedSafe
         
         if (name == "RedBall") {
-            if (remainingRedBalls >= 0) {
+            if (remainingRedBalls > 0) {
                 remainingRedBalls -= 1
                 remaining -= 8
-                if (remainingRedBalls == 0) { isLastColor = true }
+                if (remainingRedBalls == 0) {
+                    isLastColorAfterRedSafe = true
+                }
+                nextRequired = .anyColor
             }
         }
         else {
-            if (isLastColor) {
-                isLastColor = false
+            if (isLastColorAfterRedSafe) {
+                // Potted last red ball
+                isLastColorAfterRedSafe = false
+                nextRequired = .strictColor(2)
             }
             else if (remainingRedBalls == 0) {
                 remaining = max(0, remaining - points)
+                if (points < 7) {
+                    nextRequired = .strictColor(points + 1)
+                }
+                else {
+                    nextRequired = .strictColor(7)
+                }
+            }
+            else {
+                nextRequired = .red
             }
         }
         
         if (activePlayer == 1) {
             if (checkOverFlow(points: player1Score + points)) {
-                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points))
+                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points, prevState: stateSnapshot, prevSafe: safeSnapshot))
                 scoreHistory.append(entry)
                 player1Score += points
             }
         }
         else {
             if (checkOverFlow(points: player2Score + points)) {
-                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points))
+                let entry = HistoryEntry(playerNumber: activePlayer, type: .shot(points: points, prevState: stateSnapshot, prevSafe: safeSnapshot))
                 scoreHistory.append(entry)
                 player2Score += points
             }
@@ -359,8 +402,10 @@ struct GameView: View {
         let currScore = (activePlayer == 1) ? player1Score : player2Score
         if (!checkOverFlow(points: currScore + points)) { return }
         
-        let entry = HistoryEntry(playerNumber: activePlayer, type: .freeBall(color: color))
+        let entry = HistoryEntry(playerNumber: activePlayer, type: .freeBall(color: color, prevState: nextRequired, prevSafe: isLastColorAfterRedSafe))
         scoreHistory.append(entry)
+        
+        nextRequired = .anyColor
         
         if (activePlayer == 1) {
             player1Score += points
@@ -368,59 +413,55 @@ struct GameView: View {
         else {
             player2Score += points
         }
-        
-        print("Free Ball: \(color) was taken as a red ball. +1 point to Player \(activePlayer)")
     }
     
     private func clearScores() {
         if (player1Score == 0 && player2Score == 0 && remainingRedBalls == 15) { return }
-        let entry = HistoryEntry(playerNumber: 0, type: .clear(p1Prev: player1Score, p2Prev: player2Score))
+        let entry = HistoryEntry(playerNumber: 0, type: .clear(
+            p1Prev: player1Score,
+            p2Prev: player2Score,
+            redBallsPrev: remainingRedBalls,
+            remainingPrev: remaining,
+            nextReqPrev: nextRequired,
+            prevSafe: isLastColorAfterRedSafe))
         scoreHistory.append(entry)
         player1Score = 0
         player2Score = 0
         remainingRedBalls = 15
         remaining = 147
-        isLastColor = false
+        nextRequired = .red
+        isLastColorAfterRedSafe = false
     }
     
     private func undoLastStep() {
         guard let lastEntry = scoreHistory.popLast() else { return }
         
         switch lastEntry.type {
-        case .shot(let points):
-            if lastEntry.playerNumber == 1 {
+        case .shot(let points, let prevState, let prevSafe):
+            if (lastEntry.playerNumber == 1) {
                 player1Score = max(0, player1Score - points)
-                if (points == 1) {
-                    remainingRedBalls = min(15, remainingRedBalls + 1)
-                    remaining += 8
-                    if (remainingRedBalls == 1) { isLastColor = false }
-                }
-                else {
-                    if (remainingRedBalls == 0) {
-                        if (remaining == 27) { isLastColor = true }
-                        else { remaining += points }
-                    }
-                }
             }
             else {
                 player2Score = max(0, player2Score - points)
-                if (points == 1) {
-                    remainingRedBalls = min(15, remainingRedBalls + 1)
-                    remaining += 8
-                    if (remainingRedBalls == 1) { isLastColor = false }
-                }
-                else {
-                    if (remainingRedBalls == 0) {
-                        if (remaining == 27) { isLastColor = true }
-                        else { remaining += points }
-                    }
-                }
             }
             
-        case .clear(let p1Prev, let p2Prev):
+            if (points == 1) {
+                remainingRedBalls = min(15, remainingRedBalls + 1)
+                remaining += 8
+            }
+            else if (remainingRedBalls == 0 && !prevSafe) {
+                remaining += points
+            }
+            nextRequired = prevState
+            isLastColorAfterRedSafe = prevSafe
+            
+        case .clear(let p1Prev, let p2Prev, let redBallsPrev, let remainingPrev, let nextReqPrev, let safePrev):
             player1Score = p1Prev
             player2Score = p2Prev
-            remainingRedBalls += 1
+            remainingRedBalls = redBallsPrev
+            remaining = remainingPrev
+            nextRequired = nextReqPrev
+            isLastColorAfterRedSafe = safePrev
             
         case .foul(let points, let receiver):
             if (receiver == 1) {
@@ -430,16 +471,41 @@ struct GameView: View {
                 player2Score = max(0, player2Score - points)
             }
         
-        case .freeBall:
+        case .freeBall(let color, let prevState, let prevSafe):
             if (lastEntry.playerNumber == 1) {
                 player1Score = max(0, player1Score - 1)
             }
             else {
                 player2Score = max(0, player2Score - 1)
             }
+            nextRequired = prevState
+            isLastColorAfterRedSafe = prevSafe
+            
+        case .miss(let prevState, let prevSafe, let prevPlayer):
+            nextRequired = prevState
+            isLastColorAfterRedSafe = prevSafe
+            activePlayer = prevPlayer
         }
     }
+    
+    private func missTapped() {
+        let nextState: NextRequiredBall
+        if (nextRequired == .anyColor) {
+            nextState = .red
+        }
+        else {
+            nextState = nextRequired
+        }
+        
+        let entry = HistoryEntry(playerNumber: activePlayer, type: .miss(prevState: nextRequired, prevSafe: isLastColorAfterRedSafe, prevPlayer: activePlayer))
+        scoreHistory.append(entry)
+        
+        nextRequired = nextState
+        activePlayer = (activePlayer == 1) ? 2 : 1
+    }
 }
+
+    
 
 #Preview {
     ContentView()
